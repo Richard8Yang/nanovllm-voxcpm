@@ -129,6 +129,8 @@ def main_loop(
     queue_out : mp.Queue,
     args, kwargs
 ):
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     srv = VoxCPMServerImpl(*args, **kwargs)
 
     states = {
