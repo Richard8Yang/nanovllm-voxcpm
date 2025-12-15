@@ -32,7 +32,6 @@ class VoxCPMEngine(LLMEngineBase):
         self.n_decode_pad_frames = 4
         self.feat_dim = config.model_config.feat_dim
         self.patch_size = config.model_config.patch_size
-        self.chunk_size = 640
         self.audio_start_token = 101
         self.block_size = config.kvcache_block_size
 
@@ -151,5 +150,17 @@ class VoxCPMEngine(LLMEngineBase):
 
         self.add_sequence(seq)
 
-    def encode_latents(self, wav : torch.Tensor) -> np.ndarray:
+    def encode_latents(self, wav : torch.Tensor, align_size : int = -1) -> np.ndarray:
+        """ Encode wav to latents
+        This function will pad the wav to the nearest multiple of the chunk size.
+        Args:
+            wav: (1, T)
+        Returns:
+            latents: (n_latents, dim_feat)
+        """
+        if align_size == -1:
+            align_size = self.patch_size * self.model_runner.vae.chunk_size
+        if wav.size(1) % align_size != 0:
+            remained = align_size - wav.size(1) % align_size
+            wav = torch.nn.functional.pad(wav, (0, remained))
         return self.model_runner.encode_latents(wav)
