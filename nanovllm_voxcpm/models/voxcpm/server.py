@@ -19,6 +19,9 @@ import contextlib
 from typing import Any, AsyncGenerator, List, Optional, cast
 from typing_extensions import TypedDict, Literal
 import numpy as np
+import random
+import logging
+
 from numpy.typing import NDArray
 
 Waveform = NDArray[np.float32]
@@ -49,7 +52,6 @@ class ModelInfoResponse(TypedDict):
     feat_dim: int
     patch_size: int
     model_path: str
-
 
 def gen_uuid() -> str:
     return uuid.uuid4().hex
@@ -489,14 +491,15 @@ class AsyncVoxCPMServer:
 
     async def generate(
         self,
-        target_text: str,
-        prompt_latents: bytes | None = None,
-        prompt_text: str = "",
-        max_generate_length: int = 2000,
-        temperature: float = 1.0,
-        cfg_value: float = 2.0,
-    ) -> AsyncGenerator[Waveform, None]:
-        seq_id = gen_uuid()
+        target_text : str,
+        prompt_latents : bytes | None = None,
+        prompt_text : str = "",
+        max_generate_length : int = 2000,
+        temperature : float = 1.0,
+        cfg_value : float = 2.0,
+        seq_id : str | None = None,
+    ):
+        seq_id = gen_uuid() if seq_id is None else seq_id
         self.stream_table[seq_id] = asyncio.Queue()
 
         is_normal_exit = False
@@ -518,6 +521,8 @@ class AsyncVoxCPMServer:
                     is_normal_exit = True
                     break
                 yield data
+            
+            torch.cuda.empty_cache()
         finally:
             if not is_normal_exit:
                 await self.submit("cancel", seq_id)
@@ -533,6 +538,8 @@ class AsyncVoxCPMServer:
     async def reset_lora(self) -> ResetLoraResponse:
         return await self.submit("reset_lora")
 
+    async def cancel(self, seq_id : str):
+        await self.submit("cancel", seq_id)
 
 class AsyncVoxCPMServerPool:
     def __init__(
@@ -598,16 +605,24 @@ class AsyncVoxCPMServerPool:
 
     async def remove_prompt(self, prompt_id: str):
         del self._prompt_pool[prompt_id]
+    
+    async def get_seq_id(self):
+        return gen_uuid()
 
+    async def cancel(self, seq_id : str):
+        for server in self.servers:
+            await server.cancel(seq_id)
+    
     async def generate(
         self,
-        target_text: str,
-        prompt_latents: bytes | None = None,
-        prompt_text: str = "",
-        prompt_id: str | None = None,
-        max_generate_length: int = 2000,
-        temperature: float = 1.0,
-        cfg_value: float = 2.0,
+        target_text : str,
+        prompt_latents : bytes | None = None,
+        prompt_text : str = "",
+        prompt_id : str | None = None,
+        max_generate_length : int = 2000,
+        temperature : float = 1.0,
+        cfg_value : float = 2.0,
+        seq_id : str | None = None,
     ):
         """Generate audio conditioned on text and optional prompt.
 
@@ -651,7 +666,11 @@ class AsyncVoxCPMServerPool:
             prompt_latents = prompt_info["latents"]
             prompt_text = prompt_info["text"]
 
-        min_load_server_idx = np.argmin(self.servers_load)
+        # min_load_server_idx = np.argmin(self.servers_load)
+        min_load_server_idx = int(random.choice(np.where(self.servers_load == np.min(self.servers_load))[0]))
+
+        # logging.info(f"server idx = {min_load_server_idx}, server loads {self.servers_load}")
+
         self.servers_load[min_load_server_idx] += 1
 
         server = self.servers[min_load_server_idx]
@@ -664,6 +683,7 @@ class AsyncVoxCPMServerPool:
                 max_generate_length,
                 temperature,
                 cfg_value,
+                seq_id
             ):
                 yield data
         finally:

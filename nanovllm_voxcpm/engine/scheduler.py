@@ -66,6 +66,8 @@ from nanovllm_voxcpm.config import Config
 from nanovllm_voxcpm.engine.sequence import Sequence, SequenceStatus
 from nanovllm_voxcpm.engine.block_manager import BlockManager
 
+import logging
+import uuid
 
 class Scheduler:
     def __init__(self, config: Config):
@@ -106,6 +108,10 @@ class Scheduler:
         while self.waiting and num_seqs < self.max_num_seqs:
             seq = self.waiting[0]
             if num_batched_tokens + len(seq) > self.max_num_batched_tokens or not self.block_manager.can_allocate(seq):
+                logging.error(f"Cannot allocate block for seq {seq} of len {len(seq)} " \
+                    "(num_batched_tokens={num_batched_tokens}) " \
+                    "max_num_batched_tokens={self.max_num_batched_tokens} " \
+                    "can_allocate: {self.block_manager.can_allocate(seq)}")
                 break
 
             self.block_manager.allocate(seq)
@@ -134,6 +140,12 @@ class Scheduler:
                 num_seqs += 1
                 self.block_manager.may_append(seq)
                 scheduled_seqs.append(seq)
+        
+        if not scheduled_seqs:
+            logging.warning(f"DEBUG: Waiting: {len(self.waiting)}, Running: {len(self.running)}")
+            logging.warning(f"DEBUG: Free GPU Blocks: {len(self.block_manager.free_block_ids)}")
+            # Optional: simply return to prevent crash, though this may cause a loop
+            return [], False
         assert scheduled_seqs
         self.running.extendleft(reversed(scheduled_seqs))
         return scheduled_seqs, False
