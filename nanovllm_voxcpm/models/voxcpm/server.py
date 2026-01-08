@@ -11,6 +11,7 @@ import asyncio
 from typing import List
 import numpy as np
 import random
+import logging
 
 def gen_uuid() -> str:
     return uuid.uuid4().hex
@@ -271,9 +272,10 @@ class AsyncVoxCPMServer:
         prompt_text : str = "",
         max_generate_length : int = 2000,
         temperature : float = 1.0,
-        cfg_value : float = 2.0
+        cfg_value : float = 2.0,
+        seq_id : str | None = None,
     ):
-        seq_id = gen_uuid()
+        seq_id = gen_uuid() if seq_id is None else seq_id
         self.stream_table[seq_id] = asyncio.Queue()
 
         is_normal_exit = False
@@ -286,11 +288,15 @@ class AsyncVoxCPMServer:
                     is_normal_exit = True
                     break
                 yield data
+            
+            torch.cuda.empty_cache()
         finally:
             if not is_normal_exit:
                 await self.submit("cancel", seq_id)
             del self.stream_table[seq_id]
 
+    async def cancel(self, seq_id : str):
+        await self.submit("cancel", seq_id)
 
 class AsyncVoxCPMServerPool:
     def __init__(self,
@@ -348,6 +354,13 @@ class AsyncVoxCPMServerPool:
     async def remove_prompt(self, prompt_id : str):
         del self._prompt_pool[prompt_id]
     
+    async def get_seq_id(self):
+        return gen_uuid()
+
+    async def cancel(self, seq_id : str):
+        for server in self.servers:
+            await server.cancel(seq_id)
+    
     async def generate(
         self,
         target_text : str,
@@ -356,7 +369,8 @@ class AsyncVoxCPMServerPool:
         prompt_id : str | None = None,
         max_generate_length : int = 2000,
         temperature : float = 1.0,
-        cfg_value : float = 2.0
+        cfg_value : float = 2.0,
+        seq_id : str | None = None,
     ):
         if prompt_id is not None:
             if prompt_id not in self._prompt_pool:
@@ -370,13 +384,17 @@ class AsyncVoxCPMServerPool:
             prompt_latents = prompt_info["latents"]
             prompt_text = prompt_info["text"]
 
-        min_load_server_idx = np.argmin(self.servers_load)
+        # min_load_server_idx = np.argmin(self.servers_load)
+        min_load_server_idx = int(random.choice(np.where(self.servers_load == np.min(self.servers_load))[0]))
+
+        # logging.info(f"server idx = {min_load_server_idx}, server loads {self.servers_load}")
+
         self.servers_load[min_load_server_idx] += 1
 
         server = self.servers[min_load_server_idx]
 
         try:
-            async for data in server.generate(target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value):
+            async for data in server.generate(target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value, seq_id):
                 yield data
         finally:
             self.servers_load[min_load_server_idx] -= 1

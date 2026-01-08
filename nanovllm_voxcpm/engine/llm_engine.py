@@ -60,6 +60,10 @@ class LLMEngineBase:
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
         runner_tasks = [self.preprocess_seq(seq, is_prefill) for seq in seqs]
+        
+        if not runner_tasks:
+            return []
+        
         outputs = self.model_runner.call("run", runner_tasks, is_prefill)
         
         for seq, output in zip(seqs, outputs):
