@@ -3,10 +3,12 @@ import asyncio
 import numpy as np
 import soundfile as sf
 
-async def tts_request(text : str):
+
+async def tts_request(text: str):
     async with aiohttp.ClientSession() as session:
         async with session.post("http://localhost:8000/generate", json={"target_text": text}) as response:
             return await response.content.read()
+
 
 async def main():
     texts = [
@@ -27,7 +29,7 @@ async def main():
         while len(tasks) < 10 and task_idx < len(texts):
             tasks.add(asyncio.create_task(tts_request(texts[task_idx])))
             task_idx += 1
-        
+
         done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             if cnt < 10:
@@ -35,6 +37,7 @@ async def main():
                 sf.write(f"test_{cnt}.wav", wav, 44100)
             cnt += 1
             print(f"Processed {cnt} tasks")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
