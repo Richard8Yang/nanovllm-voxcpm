@@ -110,17 +110,28 @@ class VoxCPMServerImpl:
         temperature: float = 1.0,
         cfg_value: float = 1.0,
     ) -> None:
-        prompt_latents_arr: np.ndarray | None
-        if prompt_latents is not None:
-            if len(prompt_text) == 0:
-                raise ValueError("Prompt text is required when prompt latents are provided")
-
-            prompt_latents_arr = np.frombuffer(prompt_latents, dtype=np.float32).reshape(-1, self.llm.feat_dim)
-        else:
-            prompt_latents_arr = None
+        if prompt_latents is None:
             if len(prompt_text) > 0:
                 raise ValueError("Prompt text is not allowed when prompt latents are not provided")
+            self.llm.add_request(
+                seq_id=seq_id,
+                target_text=target_text,
+                prompt_text="",
+                max_generate_length=max_generate_length,
+                temperature=temperature,
+                cfg_value=cfg_value,
+            )
+            return
 
+        if len(prompt_text) == 0:
+            raise ValueError("Prompt text is required when prompt latents are provided")
+
+        # Help static type checkers: prompt_latents is non-None here.
+        assert prompt_latents is not None
+        prompt_latents_buf: bytes = prompt_latents
+        prompt_latents_arr: np.ndarray = np.frombuffer(prompt_latents_buf, dtype=np.float32).reshape(
+            -1, self.llm.feat_dim
+        )
         self.llm.add_request(
             seq_id=seq_id,
             target_text=target_text,
@@ -183,7 +194,18 @@ def main_loop(queue_in: mp.Queue, queue_out: mp.Queue, args, kwargs):
     if coalesce_ms > 0:
         coalesce_ms = min(coalesce_ms, 50.0)
 
-    srv = VoxCPMServerImpl(*args, **kwargs)
+    try:
+        srv = VoxCPMServerImpl(*args, **kwargs)
+    except Exception:
+        queue_out.put(
+            {
+                "type": "init_error",
+                "error": traceback.format_exc(),
+            }
+        )
+        return
+    else:
+        queue_out.put({"type": "init_ok"})
 
     states = {
         "is_stoped": False,
@@ -313,6 +335,12 @@ class AsyncVoxCPMServer:
         )
         self.process.start()
 
+        # Child process sends an explicit init_ok/init_error message.
+        # Track it as a Future so wait_for_ready can block without timeouts,
+        # but still fail fast if init throws (e.g. CUDA OOM).
+        loop = asyncio.get_running_loop()
+        self._init_fut: asyncio.Future[None] = loop.create_future()
+
         self.recv_task: asyncio.Task = asyncio.create_task(self.recv_queue())
         self.op_table: dict[str, asyncio.Future[Any]] = {}
         self.stream_table: dict[str, asyncio.Queue[Waveform | None]] = {}
@@ -322,6 +350,16 @@ class AsyncVoxCPMServer:
             try:
                 res = await asyncio.to_thread(self.queue_out.get, timeout=1)
             except Empty:
+                continue
+
+            # Init handshake (sent once at process startup).
+            if res.get("type") == "init_ok":
+                if not self._init_fut.done():
+                    self._init_fut.set_result(None)
+                continue
+            if res.get("type") == "init_error":
+                if not self._init_fut.done():
+                    self._init_fut.set_exception(RuntimeError(res.get("error", "unknown init error")))
                 continue
 
             if res["type"] == "stream":
@@ -363,15 +401,42 @@ class AsyncVoxCPMServer:
         return await self.submit("health")
 
     async def wait_for_ready(self) -> None:
-        await self.health()
+        # Never time out here; instead fail fast if the child process exits.
+        while not self._init_fut.done():
+            if self.process.exitcode is not None:
+                if not self._init_fut.done():
+                    self._init_fut.set_exception(
+                        RuntimeError(f"server process exited early: exitcode={self.process.exitcode}")
+                    )
+                break
+            await asyncio.sleep(0.05)
+        await self._init_fut
 
     async def encode_latents(self, wav: bytes, wav_format: str) -> bytes:
         return await self.submit("encode_latents", wav, wav_format)
 
     async def stop(self) -> None:
-        await self.submit("stop")
+        # Best-effort graceful shutdown. If init failed or the child process
+        # already exited, don't block indefinitely.
+        if self.process.exitcode is None and self.process.is_alive():
+            try:
+                await asyncio.wait_for(self.submit("stop"), timeout=2.0)
+            except Exception:
+                # Fall back to terminate/kill below.
+                pass
+
         self.recv_task.cancel()
-        await asyncio.to_thread(self.process.join)
+
+        if self.process.is_alive():
+            self.process.terminate()
+            await asyncio.to_thread(self.process.join, 2.0)
+
+        if self.process.is_alive():
+            # Python 3.7+ on POSIX.
+            kill = getattr(self.process, "kill", None)
+            if callable(kill):
+                kill()
+                await asyncio.to_thread(self.process.join, 2.0)
 
     async def generate(
         self,

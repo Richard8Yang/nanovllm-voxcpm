@@ -151,7 +151,7 @@ def _get_server(request: Request) -> AsyncVoxCPMServerPool:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Create and tear down the model server pool."""
 
-    app.state.server = AsyncVoxCPMServerPool(
+    server = AsyncVoxCPMServerPool(
         model_path=MODEL_PATH,
         max_num_batched_tokens=8192,
         max_num_seqs=16,
@@ -161,15 +161,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         devices=[0],
         lora_config=LORA_CONFIG,  # Add LoRA config
     )
-    await app.state.server.wait_for_ready()  # Wait for model to load first
+    app.state.server = server
 
-    # Then load LoRA weights (optional)
-    if LORA_PATH:
-        await app.state.server.load_lora(LORA_PATH)
-        await app.state.server.set_lora_enabled(True)
-    yield
-    await app.state.server.stop()
-    delattr(app.state, "server")
+    try:
+        await server.wait_for_ready()  # Wait for model to load first
+
+        # Then load LoRA weights (optional)
+        if LORA_PATH:
+            await server.load_lora(LORA_PATH)
+            await server.set_lora_enabled(True)
+    except Exception:
+        # If startup fails (e.g. CUDA OOM), clean up and crash the service.
+        try:
+            await server.stop()
+        finally:
+            if getattr(app.state, "server", None) is server:
+                delattr(app.state, "server")
+        raise
+
+    try:
+        yield
+    finally:
+        await server.stop()
+        if getattr(app.state, "server", None) is server:
+            delattr(app.state, "server")
 
 
 app = FastAPI(
@@ -236,7 +251,9 @@ async def set_lora_enabled(
 
 
 @app.post("/lora/reset", response_model=StatusOKResponse, tags=["lora"])
-async def reset_lora(server: AsyncVoxCPMServerPool = Depends(_get_server)) -> StatusOKResponse:
+async def reset_lora(
+    server: AsyncVoxCPMServerPool = Depends(_get_server),
+) -> StatusOKResponse:
     """Reset (unload) LoRA weights."""
 
     result = await server.reset_lora()
@@ -279,7 +296,9 @@ class _SupportsToBytes(Protocol):
         ...
 
 
-async def _chunks_to_bytes(gen: AsyncIterator[_SupportsToBytes]) -> AsyncIterator[bytes]:
+async def _chunks_to_bytes(
+    gen: AsyncIterator[_SupportsToBytes],
+) -> AsyncIterator[bytes]:
     """Convert an async iterator of "array-like" chunks into bytes."""
 
     async for data in gen:

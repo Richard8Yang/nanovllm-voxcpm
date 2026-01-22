@@ -118,7 +118,7 @@ class VoxCPMEngine(LLMEngineBase):
         seq_id: str,
         target_text: str,
         prompt_text: str = "",
-        prompt_latents: np.ndarray = None,
+        prompt_latents: np.ndarray | None = None,
         max_generate_length: int = 2000,
         temperature: float = 1.0,
         cfg_value: float = 1.0,
