@@ -59,6 +59,12 @@ From the repo root:
 uv run fastapi run deployment/app/main.py --host 0.0.0.0 --port 8000
 ```
 
+Alternatively (matches the container entrypoint):
+
+```bash
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
 OpenAPI:
 
 - http://localhost:8000/docs
@@ -68,6 +74,32 @@ OpenAPI:
 ```bash
 uv run pytest deployment/tests -q
 ```
+
+## Docker (k8s-ready)
+
+This repo ships a multi-stage CUDA image at `deployment/Dockerfile`.
+
+Build from the repo root (important: build context is `.`):
+
+```bash
+docker build -f deployment/Dockerfile -t nano-vllm-voxcpm-deployment:latest .
+```
+
+Run:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e NANOVLLM_MODEL_PATH=/models/VoxCPM1.5 \
+  -e NANOVLLM_CACHE_DIR=/var/cache/nanovllm \
+  -v /path/to/models:/models \
+  nano-vllm-voxcpm-deployment:latest
+```
+
+Notes:
+
+- GPU: on a GPU node you typically need `--gpus all` (Docker) or the NVIDIA device plugin (k8s).
+- The container runs as a non-root user (uid `10001`) and uses `NANOVLLM_CACHE_DIR` for writable cache.
+- Probes: use `GET /health` (liveness) and `GET /ready` (readiness).
 
 ## Client example
 
