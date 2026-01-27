@@ -167,6 +167,7 @@ jobs:
         # This updates pyproject.toml and generates/updates uv.lock within the CI workspace.
         run: |
           uv add --no-sync \
+            --index-strategy unsafe-best-match \
             --index ${{ matrix.torch-extra-index }} \
             --default-index https://pypi.org/simple \
             "torch==${{ matrix.torch-version }}" \
@@ -183,6 +184,7 @@ jobs:
           uv sync \
             --all-packages \
             --group dev \
+            --index-strategy unsafe-best-match \
             --index ${{ matrix.torch-extra-index }} \
             --default-index https://pypi.org/simple
 
