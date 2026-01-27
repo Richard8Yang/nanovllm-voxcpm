@@ -171,38 +171,25 @@ jobs:
             --index-url ${{ matrix.torch-extra-index }} \
             --extra-index-url https://pypi.org/simple \
             torch==${{ matrix.torch-version }} \
-            torchaudio==${{ matrix.torchaudio-version }}
-
-      - name: Install project (no deps)
-        # We explicitly control the CUDA wheel matrix (torch/torchaudio/flash-attn).
-        run: uv pip install -e . --no-deps
-
-      - name: Install runtime deps
-        run: |
-          uv pip install \
-            "setuptools" \
-            "wheel" \
-            "psutil" \
-            "fastapi" \
-            "starlette" \
-            "prometheus-client" \
-            "lameenc" \
-            "triton>=3.0.0" \
-            "transformers>=4.51.0" \
-            "xxhash" \
-            "tqdm" \
-            "numpy" \
-            "pydantic" \
-            "soundfile>=0.13.1" \
+            torchaudio==${{ matrix.torchaudio-version }} \
             "torchcodec==${{ matrix.torchcodec-version }}"
 
-      - name: Install flash-attn
-        # Prefer wheels; if a build is needed, rely on the CUDA devel toolchain.
-        run: uv pip install "flash-attn" --no-build-isolation
+      - name: Install flash-attn build deps
+        # flash-attn may build from source; ensure common build-time imports exist.
+        run: uv pip install -U setuptools wheel psutil
 
-      - name: Install test deps
-        run: uv pip install -U pytest pytest-cov
+      - name: Sync workspace deps
+        # Install remaining deps from the lockfile without touching torch/torchaudio/torchcodec.
+        run: |
+          uv sync \
+            --all-packages \
+            --group dev \
+            --frozen \
+            --index ${{ matrix.torch-extra-index }} \
+            --no-build-isolation-package flash-attn \
+            --no-install-package torch \
+            --no-install-package torchaudio \
+            --no-install-package torchcodec
 
       - name: Run tests
-        # Dependencies are installed explicitly above; avoid syncing/building extras.
         run: uv run --no-sync pytest -q
