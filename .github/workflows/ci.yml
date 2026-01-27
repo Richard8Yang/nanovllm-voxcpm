@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  lint-cpu:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -34,7 +34,10 @@ jobs:
 
       - name: Install CPU torch (best effort)
         run: |
-          uv pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4.0" || true
+          uv pip install \
+            --index-url https://pypi.org/simple \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            "torch>=2.4.0" || true
 
       - name: Syntax check
         run: uv run python -m compileall nanovllm_voxcpm deployment tests
@@ -49,6 +52,148 @@ jobs:
       - name: Type check (mypy)
         # CI is CPU-only; many GPU/optional deps don't ship stubs.
         run: uv run mypy nanovllm_voxcpm deployment --ignore-missing-imports
+
+
+
+  # CUDA user-space (no GPU) test matrix.
+  #
+  # Notes:
+  # - GitHub-hosted runners do not provide GPUs. We run inside a CUDA "devel"
+  #   container and use CUDA driver API stubs so CUDA extensions can import.
+  # - We install PyTorch CUDA wheels from the PyTorch index, plus flash-attn.
+  test-cuda-no-gpu:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # torchcodec must match torch 1:1 (see upstream compatibility table).
+          # We keep Python at 3.11 here to minimize wheel-matrix variance.
+          #
+          # Multi-CUDA coverage: a few representative torch versions are tested
+          # on both cu121 and cu124; the rest run on cu124.
+          - python-version: "3.11"
+            torch-version: "2.5.0"
+            torchaudio-version: "2.5.0"
+            torchcodec-version: "0.1"
+            cuda-image: "12.1.1-devel-ubuntu22.04"
+            torch-extra-index: "https://download.pytorch.org/whl/cu121"
+          - python-version: "3.11"
+            torch-version: "2.5.0"
+            torchaudio-version: "2.5.0"
+            torchcodec-version: "0.1"
+            cuda-image: "12.4.1-devel-ubuntu22.04"
+            torch-extra-index: "https://download.pytorch.org/whl/cu124"
+
+          - python-version: "3.11"
+            torch-version: "2.6.0"
+            torchaudio-version: "2.6.0"
+            torchcodec-version: "0.2"
+            cuda-image: "12.4.1-devel-ubuntu22.04"
+            torch-extra-index: "https://download.pytorch.org/whl/cu124"
+
+          - python-version: "3.11"
+            torch-version: "2.7.0"
+            torchaudio-version: "2.7.0"
+            torchcodec-version: "0.5"
+            cuda-image: "12.1.1-devel-ubuntu22.04"
+            torch-extra-index: "https://download.pytorch.org/whl/cu121"
+          - python-version: "3.11"
+            torch-version: "2.7.0"
+            torchaudio-version: "2.7.0"
+            torchcodec-version: "0.5"
+            cuda-image: "12.4.1-devel-ubuntu22.04"
+            torch-extra-index: "https://download.pytorch.org/whl/cu124"
+
+          - python-version: "3.11"
+            torch-version: "2.8.0"
+            torchaudio-version: "2.8.0"
+            torchcodec-version: "0.7"
+            cuda-image: "12.4.1-devel-ubuntu22.04"
+            torch-extra-index: "https://download.pytorch.org/whl/cu124"
+
+          - python-version: "3.11"
+            torch-version: "2.9.0"
+            torchaudio-version: "2.9.0"
+            torchcodec-version: "0.9"
+            cuda-image: "12.4.1-devel-ubuntu22.04"
+            torch-extra-index: "https://download.pytorch.org/whl/cu124"
+
+          - python-version: "3.11"
+            torch-version: "2.10.0"
+            torchaudio-version: "2.10.0"
+            torchcodec-version: "0.10"
+            cuda-image: "12.1.1-devel-ubuntu22.04"
+            torch-extra-index: "https://download.pytorch.org/whl/cu121"
+          - python-version: "3.11"
+            torch-version: "2.10.0"
+            torchaudio-version: "2.10.0"
+            torchcodec-version: "0.10"
+            cuda-image: "12.4.1-devel-ubuntu22.04"
+            torch-extra-index: "https://download.pytorch.org/whl/cu124"
+
+    container:
+      image: nvidia/cuda:${{ matrix.cuda-image }}
+
+    env:
+      # No GPU is attached; keep CUDA paths importable.
+      CUDA_VISIBLE_DEVICES: ""
+      LD_LIBRARY_PATH: /usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install system deps (audio + build)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            curl \
+            ffmpeg \
+            libsndfile1 \
+            ninja-build \
+            pkg-config
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Install PyTorch (CUDA wheels)
+        run: |
+          uv pip install \
+            --index-url https://pypi.org/simple \
+            --extra-index-url ${{ matrix.torch-extra-index }} \
+            torch==${{ matrix.torch-version }} \
+            torchaudio==${{ matrix.torchaudio-version }}
+
+      - name: Install project (no deps)
+        # We explicitly control the CUDA wheel matrix (torch/torchaudio/flash-attn).
+        run: uv pip install -e . --no-deps
+
+      - name: Install runtime deps
+        run: |
+          uv pip install \
+            "triton>=3.0.0" \
+            "transformers>=4.51.0" \
+            "xxhash" \
+            "tqdm" \
+            "numpy" \
+            "pydantic" \
+            "soundfile>=0.13.1" \
+            "torchcodec==${{ matrix.torchcodec-version }}"
+
+      - name: Install flash-attn
+        # Prefer wheels; if a build is needed, rely on the CUDA devel toolchain.
+        run: uv pip install "flash-attn" --no-build-isolation
+
+      - name: Install test deps
+        run: uv pip install -U pytest pytest-cov
 
       - name: Run tests
         run: uv run pytest -q
