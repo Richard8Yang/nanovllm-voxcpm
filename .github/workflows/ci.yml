@@ -187,4 +187,5 @@ jobs:
         run: uv pip install -U pytest pytest-cov
 
       - name: Run tests
-        run: uv run pytest -q
+        # Dependencies are installed explicitly above; avoid syncing/building extras.
+        run: uv run --no-sync pytest -q
