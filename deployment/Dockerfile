@@ -1,15 +1,10 @@
-# syntax=docker/dockerfile:1
-
-# CUDA-enabled image intended for k8s GPU nodes.
-# Build from repo root:
-#   docker build -f deployment/Dockerfile -t nano-vllm-voxcpm-deployment:latest .
-# Run:
-#   docker run --rm -p 8000:8000 -e NANOVLLM_MODEL_PATH=/models/VoxCPM1.5 -v /path/to/models:/models nano-vllm-voxcpm-deployment:latest
-
 ARG CUDA_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu22.04
 ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
 
 FROM ${CUDA_IMAGE}
+
+# Re-declare build args for this stage so they can be used in ENV/RUN.
+ARG TORCH_CUDA_ARCH_LIST
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -29,9 +24,11 @@ RUN apt-get update \
       ninja-build \
       git \
       python3 \
+      python3-dev \
       python3-pip \
       python3-venv \
       pkg-config \
+      ffmpeg \
       libsndfile1-dev \
   && rm -rf /var/lib/apt/lists/*
 
@@ -42,7 +39,7 @@ RUN python3 -m pip install --no-cache-dir -U pip \
 COPY . .
 
 # Install workspace packages from the frozen lockfile.
-RUN uv sync --all-packages --frozen --no-dev
+RUN uv sync --all-packages --frozen --no-dev -v
 
 ENV NANOVLLM_CACHE_DIR=/var/cache/nanovllm
 
@@ -55,4 +52,4 @@ EXPOSE 8000
 USER appuser
 
 # k8s probes can use /health and /ready.
-CMD ["uv", "run", "fastapi", "run", "deployment/app/main.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "--no-sync", "fastapi", "run", "deployment/app/main.py", "--host", "0.0.0.0", "--port", "8000"]
