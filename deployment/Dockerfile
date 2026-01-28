@@ -6,14 +6,15 @@
 # Run:
 #   docker run --rm -p 8000:8000 -e NANOVLLM_MODEL_PATH=/models/VoxCPM1.5 -v /path/to/models:/models nano-vllm-voxcpm-deployment:latest
 
-ARG PYTORCH_IMAGE=pytorch/pytorch:2.4.0-cuda12.1-cudnn9
+ARG CUDA_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu22.04
 ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
 
-FROM ${PYTORCH_IMAGE}-devel AS builder
+FROM ${CUDA_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PATH=/opt/venv/bin:$PATH \
     TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
     UV_NO_PROGRESS=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv
@@ -23,56 +24,35 @@ WORKDIR /app
 # Build deps for native extensions (e.g. flash-attn) and audio libs.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
+      ca-certificates \
       build-essential \
       ninja-build \
       git \
-      curl \
+      python3 \
+      python3-pip \
+      python3-venv \
       pkg-config \
       libsndfile1-dev \
- && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --no-cache-dir -U pip \
- && python -m pip install --no-cache-dir uv
+RUN python3 -m pip install --no-cache-dir -U pip \
+ && python3 -m pip install --no-cache-dir uv \
+ && ln -sf /usr/bin/python3 /usr/local/bin/python
 
-# Copy only what uv needs for dependency resolution first.
-COPY pyproject.toml uv.lock ./
-COPY deployment/pyproject.toml ./deployment/pyproject.toml
+COPY . .
 
-# Workspace source (uv workspaces typically install local packages editable).
-COPY nanovllm_voxcpm/ ./nanovllm_voxcpm/
-COPY deployment/app/ ./deployment/app/
+# Install workspace packages from the frozen lockfile.
+RUN uv sync --all-packages --frozen --no-dev
 
-# Install only the deployment service (and its workspace deps) from the frozen lockfile.
-RUN uv sync --frozen --no-dev --package nano-vllm-voxcpm-deployment
-
-
-FROM ${PYTORCH_IMAGE}-runtime AS runtime
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PATH=/opt/venv/bin:$PATH \
-    # Prefer an explicit writable cache path in containers.
-    NANOVLLM_CACHE_DIR=/var/cache/nanovllm
-
-WORKDIR /app
-
-# Runtime libs for soundfile; keep this minimal.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      libsndfile1 \
- && rm -rf /var/lib/apt/lists/*
+ENV NANOVLLM_CACHE_DIR=/var/cache/nanovllm
 
 RUN useradd -m -u 10001 appuser \
  && mkdir -p "$NANOVLLM_CACHE_DIR" \
  && chown -R appuser:appuser "$NANOVLLM_CACHE_DIR"
-
-COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /app /app
 
 EXPOSE 8000
 
 USER appuser
 
 # k8s probes can use /health and /ready.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "fastapi", "run", "deployment/app/main.py", "--host", "0.0.0.0", "--port", "8000"]
