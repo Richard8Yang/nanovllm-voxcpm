@@ -7,6 +7,7 @@ from nanovllm_voxcpm.models.voxcpm.engine import (
 from nanovllm_voxcpm.models.voxcpm.config import LoRAConfig
 from nanovllm_voxcpm.utils.loader import load_lora_weights
 import os
+import torch
 import torch.multiprocessing as mp
 from queue import Empty
 import traceback
@@ -498,7 +499,7 @@ class AsyncVoxCPMServer:
         temperature : float = 1.0,
         cfg_value : float = 2.0,
         seq_id : str | None = None,
-    ):
+    ) -> AsyncGenerator[Waveform, None]:
         seq_id = gen_uuid() if seq_id is None else seq_id
         self.stream_table[seq_id] = asyncio.Queue()
 
@@ -540,6 +541,8 @@ class AsyncVoxCPMServer:
 
     async def cancel(self, seq_id : str):
         await self.submit("cancel", seq_id)
+        if seq_id in self.stream_table:
+            await self.stream_table[seq_id].put(None)
 
 class AsyncVoxCPMServerPool:
     def __init__(
